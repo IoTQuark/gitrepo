@@ -1,0 +1,137 @@
+//Two led Two Sensor (LD2410C)ESP32S3  ---VERSION1
+#include <ld2410.h>  // Include LD2410 radar sensor library
+
+// Serial for monitoring over USB
+#define MONITOR_SERIAL Serial
+
+// SoftwareSerial for each radar
+#define RADAR1_SERIAL Serial1
+#define RADAR2_SERIAL Serial2
+
+// Define GPIOs for LD2410 #1 (Sensor 1)
+#define RADAR1_RX_PIN 6  // ESP32 RX <- Sensor #1 TX
+#define RADAR1_TX_PIN 7  // ESP32 TX -> Sensor #1 RX
+
+// Define GPIOs for LD2410 #2 (Sensor 2)
+#define RADAR2_RX_PIN 8  // ESP32 RX <- Sensor #2 TX
+#define RADAR2_TX_PIN 9  // ESP32 TX -> Sensor #2 RX
+
+// LED outputs
+#define RED_LED_PIN 1    // Red LED = ON if any target detected under 200 cm
+#define BLUE_LED_PIN 2   // Blue LED = Blinks based on average distance
+
+// Create radar instances
+ld2410 radar1;  // Sensor 1
+ld2410 radar2;  // Sensor 2
+
+// Timing control variables
+uint32_t lastReading = 0;
+uint32_t lastBlinkTime = 0;
+bool blueLedState = false;
+int blinkInterval = 1000;  // Initial blink rate for blue LED
+
+void setup(void) {
+  // Start serial for debug monitor
+  MONITOR_SERIAL.begin(115200);
+  delay(500);
+
+  // Configure LED output pins
+  pinMode(RED_LED_PIN, OUTPUT);
+  pinMode(BLUE_LED_PIN, OUTPUT);
+
+  // Initialize Serial1 for Sensor #1
+  RADAR1_SERIAL.begin(256000, SERIAL_8N1, RADAR1_RX_PIN, RADAR1_TX_PIN);
+  delay(500);
+  radar1.begin(RADAR1_SERIAL);  // Begin communication with radar1
+
+  // Initialize Serial2 for Sensor #2
+  RADAR2_SERIAL.begin(256000, SERIAL_8N1, RADAR2_RX_PIN, RADAR2_TX_PIN);
+  delay(500);
+  radar2.begin(RADAR2_SERIAL);  // Begin communication with radar2
+}
+
+void loop() {
+  // Continuously read both sensors
+  radar1.read();
+  radar2.read();
+
+  // Update every 1000 ms
+  if (millis() - lastReading > 1000) {
+    lastReading = millis();
+
+    // Print data from Sensor 1
+    MONITOR_SERIAL.println(F("=== LD2410 #1 ==="));
+    printRadarInfo(radar1);
+
+    // Print data from Sensor 2
+    MONITOR_SERIAL.println(F("=== LD2410 #2 ==="));
+    printRadarInfo(radar2);
+
+    // Check presence from either sensor
+    bool presence = radar1.presenceDetected() || radar2.presenceDetected();
+
+    // Determine the closest target distance from each sensor
+    int dist1 = radar1.movingTargetDetected() ? radar1.movingTargetDistance() :
+               radar1.stationaryTargetDetected() ? radar1.stationaryTargetDistance() : 0;
+
+    int dist2 = radar2.movingTargetDetected() ? radar2.movingTargetDistance() :
+               radar2.stationaryTargetDetected() ? radar2.stationaryTargetDistance() : 0;
+
+    // Calculate average distance (only if valid readings exist)
+    int validCount = 0;
+    int sumDistance = 0;
+    if (dist1 > 0) { sumDistance += dist1; validCount++; }
+    if (dist2 > 0) { sumDistance += dist2; validCount++; }
+
+    int avgDistance = validCount > 0 ? sumDistance / validCount : 0;
+
+    // Turn on red LED if any object is within 200 cm
+    if ((dist1 > 0 && dist1 < 200) || (dist2 > 0 && dist2 < 200)) {
+      digitalWrite(RED_LED_PIN, HIGH);
+    } else {
+      digitalWrite(RED_LED_PIN, LOW);
+    }
+
+    // Control blue LED blink rate based on average distance
+    if (presence && avgDistance > 0) {
+      blinkInterval = map(avgDistance, 0, 600, 100, 1000);  // Closer = faster blink
+      blinkInterval = constrain(blinkInterval, 100, 1000);  // Keep within bounds
+    } else {
+      blinkInterval = 0;  // No presence: stop blinking
+      digitalWrite(BLUE_LED_PIN, LOW);
+    }
+  }
+
+  // Blink blue LED with variable timing
+  if (blinkInterval > 0 && millis() - lastBlinkTime >= blinkInterval) {
+    lastBlinkTime = millis();
+    blueLedState = !blueLedState;
+    digitalWrite(BLUE_LED_PIN, blueLedState ? HIGH : LOW);
+  }
+}
+
+// Function to print detailed info from a radar sensor
+void printRadarInfo(ld2410 &radar) {
+  if (radar.isConnected()) {
+    if (radar.presenceDetected()) {
+      if (radar.stationaryTargetDetected()) {
+        MONITOR_SERIAL.print(F("Stationary target: "));
+        MONITOR_SERIAL.print(radar.stationaryTargetDistance());
+        MONITOR_SERIAL.print(F(" cm, energy: "));
+        MONITOR_SERIAL.print(radar.stationaryTargetEnergy());
+        MONITOR_SERIAL.print(" | ");
+      }
+      if (radar.movingTargetDetected()) {
+        MONITOR_SERIAL.print(F("Moving target: "));
+        MONITOR_SERIAL.print(radar.movingTargetDistance());
+        MONITOR_SERIAL.print(F(" cm, energy: "));
+        MONITOR_SERIAL.print(radar.movingTargetEnergy());
+      }
+      MONITOR_SERIAL.println();
+    } else {
+      MONITOR_SERIAL.println(F("No target"));
+    }
+  } else {
+    MONITOR_SERIAL.println(F("Not connected"));
+  }
+}
